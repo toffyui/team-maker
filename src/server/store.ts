@@ -31,9 +31,12 @@ function shuffle<T>(arr: T[]): T[] {
   return copy;
 }
 
-export function generateTeams(session: Session, groupCount: number) {
-  const participantIds = Object.keys(session.participants);
-  const shuffledIds = shuffle(participantIds);
+export function generateTeams(session: Session, teamSize: number) {
+  const assignable = Object.values(session.participants).filter(
+    (p) => !p.isOrganizer,
+  );
+  const groupCount = Math.max(1, Math.ceil(assignable.length / teamSize));
+  const shuffledIds = shuffle(assignable.map((p) => p.id));
   const animals = shuffle(animalNames).slice(0, groupCount);
 
   session.teams = {};
@@ -59,13 +62,60 @@ export function generateTeams(session: Session, groupCount: number) {
   }
 }
 
+export function assignToNamedTeam(
+  session: Session,
+  participantId: string,
+  teamName: string | null,
+) {
+  const participant = session.participants[participantId];
+  if (!participant) return;
+  if (participant.isOrganizer) return;
+
+  const currentTeam = participant.teamId
+    ? session.teams[participant.teamId]
+    : null;
+  if (teamName !== null && currentTeam && currentTeam.name === teamName) {
+    return;
+  }
+
+  if (currentTeam) {
+    currentTeam.memberIds = currentTeam.memberIds.filter(
+      (id) => id !== participantId,
+    );
+    if (currentTeam.memberIds.length === 0) {
+      delete session.teams[currentTeam.id];
+      for (const voter of Object.keys(session.votes)) {
+        if (session.votes[voter] === currentTeam.id) {
+          delete session.votes[voter];
+        }
+      }
+    }
+  }
+
+  if (teamName === null) {
+    participant.teamId = null;
+    return;
+  }
+
+  let team = Object.values(session.teams).find((t) => t.name === teamName);
+  if (!team) {
+    const id = `team-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    team = { id, name: teamName, memberIds: [] };
+    session.teams[id] = team;
+  }
+  team.memberIds.push(participantId);
+  participant.teamId = team.id;
+}
+
 export function assignToSmallestTeam(session: Session, participantId: string) {
+  const participant = session.participants[participantId];
+  if (!participant) return;
+  if (participant.isOrganizer) return;
   const teams = Object.values(session.teams);
   if (teams.length === 0) return;
   const smallest = teams.reduce((a, b) =>
     a.memberIds.length <= b.memberIds.length ? a : b,
   );
   smallest.memberIds.push(participantId);
-  const participant = session.participants[participantId];
-  if (participant) participant.teamId = smallest.id;
+  participant.teamId = smallest.id;
 }

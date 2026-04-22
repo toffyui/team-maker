@@ -1,6 +1,11 @@
 import type { Server } from "socket.io";
 import type { Session } from "../lib/types";
-import { store, generateTeams, assignToSmallestTeam } from "./store";
+import {
+  store,
+  generateTeams,
+  assignToNamedTeam,
+  assignToSmallestTeam,
+} from "./store";
 
 export function registerSocketHandlers(io: Server) {
   io.on("connection", (socket) => {
@@ -9,30 +14,13 @@ export function registerSocketHandlers(io: Server) {
       ({
         sessionId,
         participantId,
-        name,
       }: {
         sessionId: string;
         participantId: string;
-        name: string | null;
       }) => {
         if (!sessionId || !participantId) return;
         const session = store.getOrCreate(sessionId);
         socket.join(sessionId);
-
-        if (name && !session.participants[participantId]) {
-          const trimmed = name.trim().slice(0, 50);
-          if (trimmed) {
-            session.participants[participantId] = {
-              id: participantId,
-              name: trimmed,
-              teamId: null,
-            };
-            if (session.phase !== "lobby") {
-              assignToSmallestTeam(session, participantId);
-            }
-          }
-        }
-
         broadcastState(io, session);
       },
     );
@@ -43,10 +31,12 @@ export function registerSocketHandlers(io: Server) {
         sessionId,
         participantId,
         name,
+        isOrganizer,
       }: {
         sessionId: string;
         participantId: string;
         name: string;
+        isOrganizer?: boolean;
       }) => {
         const session = store.get(sessionId);
         if (!session) return;
@@ -61,8 +51,9 @@ export function registerSocketHandlers(io: Server) {
             id: participantId,
             name: trimmed,
             teamId: null,
+            isOrganizer: Boolean(isOrganizer),
           };
-          if (session.phase !== "lobby") {
+          if (!isOrganizer && session.phase !== "lobby") {
             assignToSmallestTeam(session, participantId);
           }
         }
@@ -75,21 +66,50 @@ export function registerSocketHandlers(io: Server) {
       "session:generateTeams",
       ({
         sessionId,
-        groupCount,
+        teamSize,
       }: {
         sessionId: string;
-        groupCount: number;
+        teamSize: number;
       }) => {
         const session = store.get(sessionId);
         if (!session) return;
-        const count = Math.max(1, Math.min(20, Math.floor(groupCount)));
-        const total = Object.keys(session.participants).length;
-        if (total < count) return;
+        const size = Math.max(1, Math.min(50, Math.floor(teamSize)));
+        const assignableCount = Object.values(session.participants).filter(
+          (p) => !p.isOrganizer,
+        ).length;
+        if (assignableCount < 1) return;
 
-        generateTeams(session, count);
+        generateTeams(session, size);
         session.phase = "voting";
         session.votes = {};
 
+        broadcastState(io, session);
+      },
+    );
+
+    socket.on(
+      "session:assign",
+      ({
+        sessionId,
+        targetParticipantId,
+        teamName,
+      }: {
+        sessionId: string;
+        targetParticipantId: string;
+        teamName: string | null;
+      }) => {
+        const session = store.get(sessionId);
+        if (!session) return;
+        const name =
+          typeof teamName === "string" ? teamName.trim().slice(0, 50) : null;
+        assignToNamedTeam(session, targetParticipantId, name || null);
+        if (
+          session.phase === "lobby" &&
+          Object.keys(session.teams).length > 0
+        ) {
+          session.phase = "voting";
+          session.votes = {};
+        }
         broadcastState(io, session);
       },
     );
@@ -110,6 +130,7 @@ export function registerSocketHandlers(io: Server) {
         if (session.phase !== "voting") return;
         const participant = session.participants[participantId];
         if (!participant) return;
+        if (participant.isOrganizer) return;
         if (!session.teams[teamId]) return;
         if (participant.teamId === teamId) return;
         if (session.votes[participantId]) return;
@@ -117,7 +138,7 @@ export function registerSocketHandlers(io: Server) {
         session.votes[participantId] = teamId;
 
         const eligibleVoters = Object.values(session.participants).filter(
-          (p) => p.teamId !== null,
+          (p) => !p.isOrganizer && p.teamId !== null,
         );
         const allVoted =
           eligibleVoters.length > 0 &&

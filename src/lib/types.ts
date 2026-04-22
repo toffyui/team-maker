@@ -4,6 +4,7 @@ export type Participant = {
   id: string;
   name: string;
   teamId: string | null;
+  isOrganizer?: boolean;
 };
 
 export type Team = {

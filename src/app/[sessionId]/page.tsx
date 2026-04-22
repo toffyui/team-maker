@@ -1,14 +1,17 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Session, Team } from "@/lib/types";
+import type { Participant, Session, Team } from "@/lib/types";
 import { getOrCreateParticipantId, getSocket } from "@/lib/socket";
+import { animalNames } from "@/lib/animals";
 
 export default function SessionPage() {
   const params = useParams<{ sessionId: string }>();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const sessionId = (params?.sessionId ?? "").toUpperCase();
+  const wantsOrganizer = searchParams?.get("role") === "organizer";
 
   const [session, setSession] = useState<Session | null>(null);
   const [participantId, setParticipantId] = useState<string | null>(null);
@@ -28,11 +31,7 @@ export default function SessionPage() {
     };
     const onConnect = () => {
       setConnected(true);
-      socket.emit("session:join", {
-        sessionId,
-        participantId: pid,
-        name: null,
-      });
+      socket.emit("session:join", { sessionId, participantId: pid });
     };
     const onDisconnect = () => setConnected(false);
 
@@ -42,11 +41,7 @@ export default function SessionPage() {
 
     if (socket.connected) {
       setConnected(true);
-      socket.emit("session:join", {
-        sessionId,
-        participantId: pid,
-        name: null,
-      });
+      socket.emit("session:join", { sessionId, participantId: pid });
     }
 
     return () => {
@@ -63,7 +58,9 @@ export default function SessionPage() {
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      await navigator.clipboard.writeText(
+        `${window.location.origin}/${sessionId}`,
+      );
       setCopied(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
@@ -72,13 +69,11 @@ export default function SessionPage() {
     }
   };
 
-  if (!sessionId) {
-    return null;
-  }
+  if (!sessionId) return null;
 
   return (
     <main className="min-h-screen p-4 sm:p-6">
-      <div className="max-w-3xl mx-auto space-y-6">
+      <div className="max-w-4xl mx-auto space-y-6">
         <header className="flex items-center justify-between flex-wrap gap-3">
           <button
             onClick={() => router.push("/")}
@@ -86,7 +81,12 @@ export default function SessionPage() {
           >
             ← Home
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {me?.isOrganizer && (
+              <span className="text-xs px-2 py-1 bg-amber-600 text-white font-semibold rounded uppercase tracking-wide">
+                Organizer
+              </span>
+            )}
             <span className="text-xs uppercase tracking-widest text-slate-500">
               Session
             </span>
@@ -110,19 +110,32 @@ export default function SessionPage() {
 
         {session && participantId && (
           <>
-            {!me && <NameEntry sessionId={sessionId} participantId={participantId} />}
-            {me && session.phase === "lobby" && (
+            {!me && (
+              <NameEntry
+                sessionId={sessionId}
+                participantId={participantId}
+                asOrganizer={wantsOrganizer}
+              />
+            )}
+            {me?.isOrganizer && (
+              <OrganizerView
+                session={session}
+                me={me}
+                participantId={participantId}
+              />
+            )}
+            {me && !me.isOrganizer && session.phase === "lobby" && (
               <LobbyView session={session} me={me} />
             )}
-            {me && session.phase === "voting" && (
+            {me && !me.isOrganizer && session.phase === "voting" && (
               <VotingView
                 session={session}
                 me={me}
                 participantId={participantId}
               />
             )}
-            {me && session.phase === "results" && (
-              <ResultsView session={session} me={me} />
+            {me && !me.isOrganizer && session.phase === "results" && (
+              <ResultsView session={session} />
             )}
           </>
         )}
@@ -148,9 +161,11 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 function NameEntry({
   sessionId,
   participantId,
+  asOrganizer,
 }: {
   sessionId: string;
   participantId: string;
+  asOrganizer: boolean;
 }) {
   const [name, setName] = useState("");
 
@@ -162,26 +177,35 @@ function NameEntry({
       sessionId,
       participantId,
       name: trimmed,
+      isOrganizer: asOrganizer,
     });
   };
 
   return (
     <Card>
-      <SectionTitle>Enter your name</SectionTitle>
+      <SectionTitle>
+        {asOrganizer ? "Join as organizer" : "Enter your name"}
+      </SectionTitle>
+      {asOrganizer && (
+        <p className="text-sm text-slate-600 mb-3">
+          You won&apos;t be assigned to any team. You can generate teams
+          manually and see voting progress.
+        </p>
+      )}
       <form onSubmit={submit} className="flex gap-2">
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Your name"
-          className="flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
+          placeholder={asOrganizer ? "Your name (organizer)" : "Your name"}
+          className={`flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 ${asOrganizer ? "focus:ring-amber-600" : "focus:ring-slate-900"}`}
           maxLength={50}
           autoFocus
         />
         <button
           type="submit"
           disabled={!name.trim()}
-          className="px-5 py-3 bg-slate-900 text-white font-semibold rounded-lg hover:bg-slate-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className={`px-5 py-3 text-white font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed ${asOrganizer ? "bg-amber-600 hover:bg-amber-700" : "bg-slate-900 hover:bg-slate-800"}`}
         >
           Join
         </button>
@@ -190,66 +214,33 @@ function NameEntry({
   );
 }
 
-function AttendeesList({
-  session,
-  meId,
-  votedIds,
-}: {
-  session: Session;
-  meId: string;
-  votedIds?: Set<string>;
-}) {
-  const participants = Object.values(session.participants);
-  return (
-    <ul className="space-y-1.5">
-      {participants.map((p) => {
-        const team = p.teamId ? session.teams[p.teamId] : null;
-        const voted = votedIds?.has(p.id);
-        return (
-          <li
-            key={p.id}
-            className="flex items-center justify-between px-3 py-2 rounded-md bg-slate-50 border border-slate-100"
-          >
-            <span className="flex items-center gap-2">
-              <span className="font-medium text-slate-900">{p.name}</span>
-              {p.id === meId && (
-                <span className="text-xs text-slate-500">(you)</span>
-              )}
-            </span>
-            <span className="flex items-center gap-2">
-              {team && (
-                <span className="text-xs px-2 py-0.5 bg-slate-900 text-white rounded">
-                  {team.name}
-                </span>
-              )}
-              {voted !== undefined && (
-                <span
-                  className={`text-xs ${voted ? "text-emerald-600" : "text-slate-400"}`}
-                >
-                  {voted ? "✓ voted" : "waiting"}
-                </span>
-              )}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+function getVoterCounts(session: Session) {
+  const participants = Object.values(session.participants).filter(
+    (p) => !p.isOrganizer,
   );
+  const eligible = participants.filter((p) => p.teamId !== null);
+  const votedCount = eligible.filter((p) => session.votes[p.id]).length;
+  return { eligible, votedCount, total: participants.length };
 }
 
-function LobbyView({
-  session,
-  me,
-}: {
-  session: Session;
-  me: { id: string; name: string };
-}) {
-  const [groupCount, setGroupCount] = useState("2");
-  const total = Object.keys(session.participants).length;
+function getVoteTallies(session: Session) {
+  const counts = new Map<string, number>();
+  for (const teamId of Object.values(session.votes)) {
+    counts.set(teamId, (counts.get(teamId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function LobbyView({ session, me }: { session: Session; me: Participant }) {
+  const [teamSize, setTeamSize] = useState("4");
+  const participants = Object.values(session.participants).filter(
+    (p) => !p.isOrganizer,
+  );
+  const total = participants.length;
 
   const canGenerate = () => {
-    const n = Number(groupCount);
-    return Number.isFinite(n) && n >= 1 && n <= 20 && total >= n;
+    const n = Number(teamSize);
+    return Number.isFinite(n) && n >= 1 && n <= 50 && total >= 1;
   };
 
   const submit = (e: React.FormEvent) => {
@@ -257,7 +248,7 @@ function LobbyView({
     if (!canGenerate()) return;
     getSocket().emit("session:generateTeams", {
       sessionId: session.id,
-      groupCount: Number(groupCount),
+      teamSize: Number(teamSize),
     });
   };
 
@@ -281,14 +272,14 @@ function LobbyView({
         <form onSubmit={submit} className="flex gap-2 items-end">
           <label className="flex-1">
             <span className="block text-sm text-slate-600 mb-1">
-              Number of teams
+              Team size (people per team)
             </span>
             <input
               type="number"
               min={1}
-              max={20}
-              value={groupCount}
-              onChange={(e) => setGroupCount(e.target.value)}
+              max={50}
+              value={teamSize}
+              onChange={(e) => setTeamSize(e.target.value)}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </label>
@@ -300,9 +291,11 @@ function LobbyView({
             Generate teams
           </button>
         </form>
-        {total < Number(groupCount) && (
+        {total > 0 && Number(teamSize) >= 1 && (
           <p className="mt-2 text-xs text-slate-500">
-            Need at least {groupCount} attendees for {groupCount} teams.
+            {total} attendee{total === 1 ? "" : "s"} →{" "}
+            {Math.ceil(total / Number(teamSize))} team
+            {Math.ceil(total / Number(teamSize)) === 1 ? "" : "s"}.
           </p>
         )}
       </Card>
@@ -316,17 +309,12 @@ function VotingView({
   participantId,
 }: {
   session: Session;
-  me: { id: string; name: string; teamId: string | null };
+  me: Participant;
   participantId: string;
 }) {
   const teams = Object.values(session.teams);
   const myVote = session.votes[participantId] ?? null;
-  const votedIds = new Set(Object.keys(session.votes));
-  const eligible = Object.values(session.participants).filter(
-    (p) => p.teamId !== null,
-  );
-  const votedCount = eligible.filter((p) => session.votes[p.id]).length;
-
+  const { eligible, votedCount } = getVoterCounts(session);
   const myTeam = me.teamId ? session.teams[me.teamId] : null;
 
   const vote = (teamId: string) => {
@@ -339,10 +327,20 @@ function VotingView({
     });
   };
 
-  const openResults = () => {
-    if (!confirm("Open results now? Any un-submitted votes will be dropped.")) return;
-    getSocket().emit("session:openResults", { sessionId: session.id });
-  };
+  if (!myTeam) {
+    return (
+      <Card>
+        <SectionTitle>Waiting for a team…</SectionTitle>
+        <p className="text-sm text-slate-600">
+          The organizer hasn&apos;t assigned you to a team yet. You&apos;ll see
+          the voting options as soon as they do.
+        </p>
+        <div className="mt-4 text-sm text-slate-500">
+          {votedCount} / {eligible.length} voted so far.
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <>
@@ -353,13 +351,10 @@ function VotingView({
             {votedCount} / {eligible.length} voted
           </span>
         </div>
-        {myTeam && (
-          <p className="text-sm text-slate-600 mb-4">
-            You are on{" "}
-            <strong className="text-slate-900">{myTeam.name}</strong>. You
-            cannot vote for your own team.
-          </p>
-        )}
+        <p className="text-sm text-slate-600 mb-4">
+          You are on <strong className="text-slate-900">{myTeam.name}</strong>.
+          You cannot vote for your own team.
+        </p>
         <div className="grid gap-3 sm:grid-cols-2">
           {teams.map((team) => (
             <TeamCard
@@ -378,20 +373,6 @@ function VotingView({
             ✓ Your vote is recorded. Waiting for others…
           </p>
         )}
-
-        <div className="mt-4 flex justify-end">
-          <button
-            onClick={openResults}
-            className="text-sm px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50 transition"
-          >
-            Open results now
-          </button>
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle>Attendees</SectionTitle>
-        <AttendeesList session={session} meId={me.id} votedIds={votedIds} />
       </Card>
     </>
   );
@@ -437,6 +418,9 @@ function TeamCard({
         {members.map((m) => (
           <li key={m.id}>{m.name}</li>
         ))}
+        {members.length === 0 && (
+          <li className="text-slate-400 italic">no members yet</li>
+        )}
       </ul>
       <button
         onClick={onVote}
@@ -463,18 +447,58 @@ function TeamCard({
   );
 }
 
-function ResultsView({
+function AttendeesList({
   session,
-  me,
+  meId,
+  votedIds,
 }: {
   session: Session;
-  me: { id: string; name: string };
+  meId: string;
+  votedIds?: Set<string>;
 }) {
+  const participants = Object.values(session.participants).filter(
+    (p) => !p.isOrganizer,
+  );
+  return (
+    <ul className="space-y-1.5">
+      {participants.map((p) => {
+        const team = p.teamId ? session.teams[p.teamId] : null;
+        const voted = votedIds?.has(p.id);
+        return (
+          <li
+            key={p.id}
+            className="flex items-center justify-between px-3 py-2 rounded-md bg-slate-50 border border-slate-100"
+          >
+            <span className="flex items-center gap-2">
+              <span className="font-medium text-slate-900">{p.name}</span>
+              {p.id === meId && (
+                <span className="text-xs text-slate-500">(you)</span>
+              )}
+            </span>
+            <span className="flex items-center gap-2">
+              {team && (
+                <span className="text-xs px-2 py-0.5 bg-slate-900 text-white rounded">
+                  {team.name}
+                </span>
+              )}
+              {voted !== undefined && (
+                <span
+                  className={`text-xs ${voted ? "text-emerald-600" : "text-slate-400"}`}
+                >
+                  {voted ? "✓ voted" : "waiting"}
+                </span>
+              )}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ResultsView({ session }: { session: Session }) {
   const teams = Object.values(session.teams);
-  const counts = new Map<string, number>();
-  for (const teamId of Object.values(session.votes)) {
-    counts.set(teamId, (counts.get(teamId) ?? 0) + 1);
-  }
+  const counts = getVoteTallies(session);
   const maxCount = Math.max(0, ...teams.map((t) => counts.get(t.id) ?? 0));
   const ranked = [...teams].sort(
     (a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0),
@@ -486,66 +510,375 @@ function ResultsView({
   };
 
   return (
+    <Card>
+      <SectionTitle>Results</SectionTitle>
+      <ol className="space-y-2">
+        {ranked.map((team, i) => {
+          const count = counts.get(team.id) ?? 0;
+          const isWinner = count > 0 && count === maxCount;
+          const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+          return (
+            <li
+              key={team.id}
+              className={`rounded-lg border p-3 ${
+                isWinner
+                  ? "border-amber-400 bg-amber-50"
+                  : "border-slate-200 bg-white"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-500 font-mono">
+                    #{i + 1}
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {team.name}
+                  </span>
+                  {isWinner && (
+                    <span className="text-xs px-2 py-0.5 bg-amber-500 text-white rounded">
+                      winner
+                    </span>
+                  )}
+                </div>
+                <span className="text-sm font-mono text-slate-700">
+                  {count} {count === 1 ? "vote" : "votes"}
+                </span>
+              </div>
+              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${isWinner ? "bg-amber-500" : "bg-slate-700"}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-slate-600">
+                {team.memberIds
+                  .map((id) => session.participants[id]?.name)
+                  .filter(Boolean)
+                  .join(", ")}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="mt-5 flex justify-end">
+        <button
+          onClick={reset}
+          className="px-4 py-2 bg-slate-900 text-white font-semibold rounded-lg hover:bg-slate-800 transition"
+        >
+          Start new round
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+function OrganizerView({
+  session,
+  me,
+  participantId,
+}: {
+  session: Session;
+  me: Participant;
+  participantId: string;
+}) {
+  const [teamSize, setTeamSize] = useState("4");
+
+  const participants = Object.values(session.participants).filter(
+    (p) => !p.isOrganizer,
+  );
+  const organizers = Object.values(session.participants).filter(
+    (p) => p.isOrganizer,
+  );
+  const teams = Object.values(session.teams);
+  const { eligible, votedCount } = getVoterCounts(session);
+  const tallies = getVoteTallies(session);
+
+  const autoGenerate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const n = Number(teamSize);
+    if (!Number.isFinite(n) || n < 1 || n > 50) return;
+    if (participants.length < 1) return;
+    if (
+      teams.length > 0 &&
+      !confirm(
+        "This will clear current teams and votes and reshuffle everyone. Continue?",
+      )
+    )
+      return;
+    getSocket().emit("session:generateTeams", {
+      sessionId: session.id,
+      teamSize: n,
+    });
+  };
+
+  const assign = (targetParticipantId: string, teamName: string | null) => {
+    getSocket().emit("session:assign", {
+      sessionId: session.id,
+      targetParticipantId,
+      teamName,
+    });
+  };
+
+  const openResults = () => {
+    getSocket().emit("session:openResults", { sessionId: session.id });
+  };
+
+  const reset = () => {
+    if (!confirm("Reset the session? Teams, assignments, and votes will be cleared."))
+      return;
+    getSocket().emit("session:reset", { sessionId: session.id });
+  };
+
+  return (
     <>
       <Card>
-        <SectionTitle>Results</SectionTitle>
-        <ol className="space-y-2">
-          {ranked.map((team, i) => {
-            const count = counts.get(team.id) ?? 0;
-            const isWinner = count > 0 && count === maxCount;
-            const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
-            return (
-              <li
-                key={team.id}
-                className={`rounded-lg border p-3 ${
-                  isWinner
-                    ? "border-amber-400 bg-amber-50"
-                    : "border-slate-200 bg-white"
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-500 font-mono">
-                      #{i + 1}
+        <div className="flex items-baseline justify-between flex-wrap gap-2">
+          <SectionTitle>
+            Organizer control — {me.name}{" "}
+            <span className="text-slate-500 font-normal text-sm">(you)</span>
+          </SectionTitle>
+          <span className="text-sm text-slate-500">
+            Phase:{" "}
+            <span className="font-semibold text-slate-900">
+              {session.phase}
+            </span>
+          </span>
+        </div>
+        {organizers.length > 1 && (
+          <p className="text-xs text-slate-500 mb-2">
+            Other organizers:{" "}
+            {organizers
+              .filter((o) => o.id !== participantId)
+              .map((o) => o.name)
+              .join(", ")}
+          </p>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle>Random assign</SectionTitle>
+        <form onSubmit={autoGenerate} className="flex gap-2 items-end">
+          <label className="flex-1">
+            <span className="block text-sm text-slate-600 mb-1">
+              Team size (people per team)
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={teamSize}
+              onChange={(e) => setTeamSize(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={participants.length < 1 || Number(teamSize) < 1}
+            className="px-4 py-2 bg-slate-900 text-white font-semibold rounded hover:bg-slate-800 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Shuffle
+          </button>
+        </form>
+        <p className="mt-2 text-xs text-slate-500">
+          {participants.length} attendee
+          {participants.length === 1 ? "" : "s"} →{" "}
+          {participants.length > 0 && Number(teamSize) >= 1
+            ? Math.ceil(participants.length / Number(teamSize))
+            : 0}{" "}
+          team
+          {participants.length > 0 &&
+          Math.ceil(participants.length / Number(teamSize)) === 1
+            ? ""
+            : "s"}
+          . Or skip this and assign each person to a team below.
+        </p>
+      </Card>
+
+      <Card>
+        <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+          <SectionTitle>
+            Attendees{" "}
+            <span className="text-slate-500 font-normal">
+              ({participants.length})
+            </span>
+          </SectionTitle>
+          {session.phase === "voting" && (
+            <span className="text-sm text-slate-500">
+              {votedCount} / {eligible.length} voted
+            </span>
+          )}
+        </div>
+        {participants.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No attendees have joined yet. Share session code{" "}
+            <code className="font-mono font-bold">{session.id}</code>.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {participants.map((p) => {
+              const currentTeam = p.teamId ? session.teams[p.teamId] : null;
+              const hasVoted = !!session.votes[p.id];
+              return (
+                <li
+                  key={p.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 rounded-md bg-slate-50 border border-slate-100"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="font-medium text-slate-900 truncate">
+                      {p.name}
                     </span>
-                    <span className="font-semibold text-slate-900">
-                      {team.name}
-                    </span>
-                    {isWinner && (
-                      <span className="text-xs px-2 py-0.5 bg-amber-500 text-white rounded">
-                        winner
+                    {session.phase === "voting" && (
+                      <span
+                        className={`text-xs ${hasVoted ? "text-emerald-600" : "text-slate-400"}`}
+                      >
+                        {hasVoted ? "✓ voted" : "waiting"}
                       </span>
                     )}
-                  </div>
-                  <span className="text-sm font-mono text-slate-700">
-                    {count} {count === 1 ? "vote" : "votes"}
                   </span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={currentTeam?.name ?? ""}
+                      onChange={(e) => assign(p.id, e.target.value || null)}
+                      className="text-sm px-2 py-1 border border-slate-300 rounded bg-white hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                    >
+                      <option value="">— unassigned —</option>
+                      {animalNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {teams.length > 0 && (
+        <Card>
+          <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+            <SectionTitle>Teams</SectionTitle>
+            {session.phase === "voting" && (
+              <button
+                onClick={openResults}
+                className="text-sm px-3 py-1.5 border border-slate-300 rounded hover:bg-slate-50 transition"
+              >
+                Open results now
+              </button>
+            )}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {teams.map((team) => {
+              const members = team.memberIds
+                .map((id) => session.participants[id])
+                .filter(Boolean);
+              const count = tallies.get(team.id) ?? 0;
+              return (
+                <div
+                  key={team.id}
+                  className="rounded-lg border border-slate-200 p-3"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="font-semibold text-slate-900">
+                      {team.name}
+                    </h3>
+                    <span className="text-xs text-slate-500">
+                      {members.length} member
+                      {members.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <ul className="text-sm text-slate-700 space-y-0.5">
+                    {members.length === 0 ? (
+                      <li className="text-slate-400 italic">no members</li>
+                    ) : (
+                      members.map((m) => <li key={m.id}>{m.name}</li>)
+                    )}
+                  </ul>
+                  {(session.phase === "voting" ||
+                    session.phase === "results") && (
+                    <div className="mt-2 text-xs text-slate-600">
+                      {count} vote{count === 1 ? "" : "s"}
+                    </div>
+                  )}
                 </div>
-                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${isWinner ? "bg-amber-500" : "bg-slate-700"}`}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <ul className="mt-2 text-xs text-slate-600">
-                  {team.memberIds
-                    .map((id) => session.participants[id]?.name)
-                    .filter(Boolean)
-                    .join(", ")}
-                </ul>
-              </li>
-            );
-          })}
-        </ol>
-        <div className="mt-5 flex justify-end">
-          <button
-            onClick={reset}
-            className="px-4 py-2 bg-slate-900 text-white font-semibold rounded-lg hover:bg-slate-800 transition"
-          >
-            Start new round
-          </button>
-        </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {session.phase === "results" && (
+        <Card>
+          <SectionTitle>Results</SectionTitle>
+          <ResultsSummary session={session} />
+        </Card>
+      )}
+
+      <Card>
+        <SectionTitle>Danger zone</SectionTitle>
+        <button
+          onClick={reset}
+          className="px-4 py-2 bg-white border border-red-300 text-red-700 font-semibold rounded-lg hover:bg-red-50 transition"
+        >
+          Reset session (clear teams & votes)
+        </button>
       </Card>
     </>
+  );
+}
+
+function ResultsSummary({ session }: { session: Session }) {
+  const teams = Object.values(session.teams);
+  const counts = getVoteTallies(session);
+  const maxCount = Math.max(0, ...teams.map((t) => counts.get(t.id) ?? 0));
+  const ranked = [...teams].sort(
+    (a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0),
+  );
+
+  return (
+    <ol className="space-y-2">
+      {ranked.map((team, i) => {
+        const count = counts.get(team.id) ?? 0;
+        const isWinner = count > 0 && count === maxCount;
+        const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+        return (
+          <li
+            key={team.id}
+            className={`rounded-lg border p-3 ${
+              isWinner
+                ? "border-amber-400 bg-amber-50"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-500 font-mono">
+                  #{i + 1}
+                </span>
+                <span className="font-semibold text-slate-900">
+                  {team.name}
+                </span>
+                {isWinner && (
+                  <span className="text-xs px-2 py-0.5 bg-amber-500 text-white rounded">
+                    winner
+                  </span>
+                )}
+              </div>
+              <span className="text-sm font-mono text-slate-700">
+                {count} {count === 1 ? "vote" : "votes"}
+              </span>
+            </div>
+            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full ${isWinner ? "bg-amber-500" : "bg-slate-700"}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
